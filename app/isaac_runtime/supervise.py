@@ -8,11 +8,16 @@ import subprocess
 import sys
 
 
+def process_start_ticks(pid):
+    # comm can contain spaces, ')' and non-UTF8 bytes. starttime is field 22.
+    stat = Path(f'/proc/{pid}/stat').read_bytes()
+    return stat.rsplit(b')', 1)[1].split()[19].decode('ascii')
+
+
 def main():
     owner, expected_start, *command = sys.argv[1:]
     owner_fd = os.pidfd_open(int(owner))
-    start_ticks = Path(f'/proc/{owner}/stat').read_text().rsplit(')', 1)[1].split()[19]
-    if start_ticks != expected_start:
+    if process_start_ticks(owner) != expected_start:
         raise SystemExit('AivudaOS owner exited before sensor startup')
     owner_exit = select.poll()
     owner_exit.register(owner_fd, select.POLLIN)

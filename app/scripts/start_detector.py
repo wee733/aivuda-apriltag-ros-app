@@ -7,11 +7,7 @@ import os
 from pathlib import Path
 import sys
 
-import rclpy
-from rclpy.executors import ExternalShutdownException
-from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import CameraInfo
+from tag_config import write_config
 
 
 def calibrated_dimensions(info):
@@ -27,15 +23,12 @@ def calibrated_dimensions(info):
     return info.width, info.height
 
 
-def main(config_arg):
-    config_path = Path(config_arg)
-    if config_path.is_file():
-        cfg = json.loads(config_path.read_text(encoding='utf-8'))
-        backend = cfg.get('backend', 'CUDA')
-    else:
-        # Backward compatibility if invoked with bare backend string.
-        backend = config_arg
-        config_path = Path('/data/app_config.json')
+def start_ros(config_path, backend):
+    import rclpy
+    from rclpy.executors import ExternalShutdownException
+    from rclpy.node import Node
+    from rclpy.qos import qos_profile_sensor_data
+    from sensor_msgs.msg import CameraInfo
 
     rclpy.init(args=[])
     node = Node('apriltag_camera_info_check')
@@ -71,5 +64,23 @@ def main(config_arg):
     ])
 
 
+def main(config_arg, payload=None):
+    config_path = Path(config_arg)
+    if payload is not None:
+        # Only the process that acquired the container name publishes its config.
+        write_config(config_path, payload)
+        backend = json.loads(payload).get('backend', 'CUDA')
+    elif config_path.is_file():
+        cfg = json.loads(config_path.read_text(encoding='utf-8'))
+        backend = cfg.get('backend', 'CUDA')
+    else:
+        # Backward compatibility if invoked with bare backend string.
+        backend = config_arg
+        config_path = Path('/data/app_config.json')
+
+    start_ros(config_path, backend)
+
+
 if __name__ == '__main__':
-    main(sys.argv[1] if len(sys.argv) > 1 else '/data/app_config.json')
+    main(sys.argv[1] if len(sys.argv) > 1 else '/data/app_config.json',
+         sys.argv[2] if len(sys.argv) == 3 else None)

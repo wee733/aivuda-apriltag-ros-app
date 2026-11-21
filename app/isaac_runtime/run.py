@@ -2,13 +2,17 @@
 """Run one local Isaac ROS 5 workload in a foreground, Aivuda-owned container."""
 import fcntl
 import grp
+import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 
+from supervise import process_start_ticks
+
 
 IMAGE = 'airborne/isaac-ros:5.0-imx219-preview-20261022'
+ENTRY_SCRIPT = '/opt/aivuda-isaac/environment.sh'
 DEVICE_PATTERNS = ('nvhost-gpu', 'nvhost-as-gpu', 'nvhost-ctrl-gpu', 'nvhost-power-gpu',
                    'nvhost-tsg-gpu', 'nvgpu/igpu0/as', 'nvgpu/igpu0/channel',
                    'nvgpu/igpu0/ctrl', 'nvgpu/igpu0/power', 'nvgpu/igpu0/tsg',
@@ -34,18 +38,61 @@ def resolve_discovery_env():
     return env
 
 
+def owner_gone(cmd):
+    # docker run stores the supervising client's PID and start time in Config.Cmd
+    # at creation, even if the client never reaches the start request.
+    if not isinstance(cmd, list) or len(cmd) != 3 or cmd[0] != ENTRY_SCRIPT:
+        return False
+    pid, ticks = cmd[1:3]
+    if not all(isinstance(n, str) and n.isascii() and n.isdecimal() for n in (pid, ticks)):
+        return False
+    if pid.startswith('0') or (ticks.startswith('0') and ticks != '0'):
+        return False
+    try:
+        return process_start_ticks(pid) != ticks
+    except FileNotFoundError:
+        # hidepid can hide another user's live process from /proc as ENOENT.
+        try:
+            os.kill(int(pid), 0)
+        except ProcessLookupError:
+            return True
+        except (OSError, OverflowError, ValueError):
+            pass
+        return False
+    except (OSError, IndexError, UnicodeError):
+        return False  # Unreadable owner identity is not evidence of a stale launch.
+
+
 def cleanup_stale_container(container_name):
     """Remove a leftover stopped container with the same name after an unclean shutdown."""
+    # Only a created container needs an owner check. Omit the workload payload.
+    inspect_format = ('{{.Id}} {{.State.Status}} '
+                      '{{if and (eq .State.Status "created") .Config.Cmd (ge (len .Config.Cmd) 4)}}'
+                      '{{json (slice .Config.Cmd 0 3)}}{{else}}null{{end}}')
     inspect = subprocess.run(
-        ['docker', 'inspect', '--format', '{{.State.Running}}', container_name],
+        ['docker', 'container', 'inspect', '--format', inspect_format, container_name],
         capture_output=True, text=True, check=False,
     )
     if inspect.returncode != 0:
         return
-    if inspect.stdout.strip().lower() == 'true':
-        raise SystemExit(f'Container {container_name} is already running')
-    subprocess.run(['docker', 'rm', '-f', container_name],
+    container_id, status, cmd = inspect.stdout.strip().split(maxsplit=2)
+    if status not in ('exited', 'dead') and not (status == 'created' and owner_gone(json.loads(cmd))):
+        raise SystemExit(f'Container {container_name} ({container_id}) is already in use ({status})')
+    # Concurrent recoveries may inspect the same orphan. Never force removal or
+    # resolve the name a second time: it may already refer to the winning launch.
+    subprocess.run(['docker', 'rm', container_id],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+
+
+def supplementary_groups(runtime_data):
+    gids = {grp.getgrnam(name).gr_gid for name in ('video', 'render')}
+    # --user UID:GID drops the host's supplementary groups. Preserve the data
+    # directory's group if needed to create files, not unrelated host groups.
+    data = runtime_data.stat()
+    if (data.st_uid != os.getuid() and data.st_mode & 0o030 == 0o030
+            and data.st_mode & 0o003 != 0o003 and data.st_gid in os.getgroups()):
+        gids.add(data.st_gid)
+    return sorted(gids - {os.getgid()})
 
 
 def main():
@@ -75,7 +122,7 @@ def main():
     # The same PID becomes the foreground Docker client at exec. The worker
     # watches that process even if AivudaOS ultimately sends it SIGKILL.
     owner = os.getpid()
-    start_ticks = Path('/proc/self/stat').read_text().rsplit(')', 1)[1].split()[19]
+    start_ticks = process_start_ticks('self')
     args = ['docker', 'run', '--rm', '--pull=never', '--init', '--name', container_name,
             '--network=host', '--ipc=host', '--pid=host', '--runtime=nvidia',
             '--user', f'{os.getuid()}:{os.getgid()}', '--cap-drop=ALL',
@@ -88,13 +135,13 @@ def main():
             '--volume', f'{runtime}:/opt/aivuda-isaac:ro',
             '--volume', f'{runtime_data}:/data:rw',
             '--entrypoint', '/bin/bash']
-    for name in ('video', 'render'):
-        args.extend(['--group-add', str(grp.getgrnam(name).gr_gid)])
+    for gid in supplementary_groups(runtime_data):
+        args.extend(['--group-add', str(gid)])
     for pattern in DEVICE_PATTERNS:
         for path in sorted(Path('/dev').glob(pattern)):
             if path.is_char_device():
                 args.extend(['--device', str(path)])
-    args += [IMAGE, '/opt/aivuda-isaac/environment.sh', str(owner), start_ticks, *command]
+    args += [IMAGE, ENTRY_SCRIPT, str(owner), start_ticks, *command]
     os.execvp(args[0], args)
 
 

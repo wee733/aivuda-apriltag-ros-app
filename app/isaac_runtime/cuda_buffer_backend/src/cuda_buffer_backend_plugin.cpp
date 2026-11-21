@@ -55,8 +55,11 @@ CudaBufferBackend::get_endpoint_manager() const
   std::lock_guard<std::mutex> lock(manager_mutex_);
 
   if (!endpoint_manager_) {
-    size_t domain_id = 0;
-    endpoint_manager_ = host_endpoint_manager::HostEndpointManager::get_instance(domain_id);
+    // The packaged IMX219 publisher registers its GID in registry 0 even on a
+    // nonzero DDS domain. Both registration and lookup must use the same index.
+    constexpr size_t kImx219RegistryIndex = 0;
+    endpoint_manager_ =
+      host_endpoint_manager::HostEndpointManager::get_instance(kImx219RegistryIndex);
     endpoint_manager_->set_ipc_capable(CudaBufferImpl<uint8_t>::is_pool_ipc_capable());
   }
 
@@ -191,23 +194,23 @@ std::shared_ptr<void> CudaBufferBackend::create_descriptor_with_endpoint(
   gid.implementation_identifier = "";
   std::memcpy(gid.data, endpoint_info.endpoint_gid, RMW_GID_STORAGE_SIZE);
   auto locality = get_endpoint_manager()->query_endpoint_locality(gid);
-  if (locality.found &&
-    locality.locality == host_endpoint_manager::EndpointLocality::INTRA_PROCESS &&
-    write_event)
-  {
+  // A process cannot rely on importing its own IPC event. Only leave the wait
+  // to the reader when the peer is positively identified as a different process.
+  const bool remote_peer = locality.found &&
+    locality.locality == host_endpoint_manager::EndpointLocality::INTER_PROCESS_SAME_HOST;
+  if (write_event && !remote_peer) {
     RCUTILS_LOG_WARN_ONCE_NAMED("cuda_buffer_backend",
-      "Same-process CUDA IPC requires cudaEventSynchronize on the publish path. "
-      "Enable intra-process communication to avoid this overhead.");
-    cudaEventSynchronize(write_event);
-  }
-
-  if (write_event) {
+      "Synchronizing CUDA writes on publish for a same-process or unknown peer.");
+    CUDA_CHECK(cudaEventSynchronize(write_event));
+    // A zero wire handle now means the reader has no outstanding wait.
+    descriptor->ipc_event_handle.fill(0);
+  } else if (write_event) {
     cudaIpcEventHandle_t event_handle;
     CUDA_CHECK(cudaIpcGetEventHandle(&event_handle, write_event));
     std::memcpy(
       descriptor->ipc_event_handle.data(), &event_handle, sizeof(cudaIpcEventHandle_t));
   } else {
-    std::memset(descriptor->ipc_event_handle.data(), 0, sizeof(cudaIpcEventHandle_t));
+    descriptor->ipc_event_handle.fill(0);
   }
 
   return descriptor;
@@ -271,14 +274,10 @@ std::unique_ptr<void, void (*)(void *)> CudaBufferBackend::from_descriptor_with_
             sizeof(cudaIpcEventHandle_t));
 
         cudaEvent_t imported_event = nullptr;
-        cudaError_t ev_err = cudaIpcOpenEventHandle(&imported_event, event_handle);
-        if (ev_err == cudaSuccess) {
-          imported_buffer.set_write_event(imported_event, true);
-        } else {
-          // Same-process: IPC event handles can't be opened in the originating
-          // process.
-          (void)cudaGetLastError();
-        }
+        // A nonzero handle is a required writer fence, including for legacy
+        // publishers. Never return the imported memory if the fence cannot open.
+        CUDA_CHECK(cudaIpcOpenEventHandle(&imported_event, event_handle));
+        imported_buffer.set_write_event(imported_event, true);
       }
 
       auto result = std::make_unique<CudaBufferImpl<uint8_t>>(
@@ -288,7 +287,7 @@ std::unique_ptr<void, void (*)(void *)> CudaBufferBackend::from_descriptor_with_
         }};
     } catch (const std::exception & e) {
       RCUTILS_LOG_WARN_NAMED("cuda_buffer_backend",
-        "IPC import failed, falling back to CPU: %s", e.what());
+        "IPC import failed: %s", e.what());
     }
   }
 

@@ -16,11 +16,11 @@ properties:
       - tags
     properties:
       ros_domain_id:
-        description: 与 IMX219 相机和检测结果订阅者相同的 ROS 域。
+        description: 与 IMX219 相机和检测结果订阅者相同的 ROS 域（-1 表示继承系统全局 sys.ros2_default_domain_id）。
         type: integer
-        minimum: 0
+        minimum: -1
         maximum: 232
-        default: 0
+        default: -1
         need_restart: true
       backend:
         description: NVIDIA Isaac ROS 官方 AprilTagNode 后端（CUDA 仅支持 tag36h11；CPU/PVA 支持全部官方标志族）。

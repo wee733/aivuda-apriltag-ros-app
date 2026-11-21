@@ -3,4 +3,5 @@ Tag: 0.1.2
 Commit: 7e723061d03b347bedea69009b003f33e9b53314
 Subdirectory: cuda_buffer_backend/cuda_buffer_backend
 Local CMake patch: ELF NODELETE keeps deferred IPC buffer deleters mapped after pluginlib unload.
-Built against the installed CUDA 13.2; no runtime C++ source changes.
+Built against the pinned image's CUDA 13.2. The bundled source names the upstream registry index (0) to document the packaged IMX219 producer contract.
+Local event-handling patch: for same-process or unknown peers, complete the writer event before publishing a descriptor with no pending fence. Reject an imported descriptor if its nonzero event handle cannot be opened. No descriptor layout or plugin ABI change.

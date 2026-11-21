@@ -85,6 +85,8 @@
     }
     th { color: var(--muted); font-weight: 500; font-size: 12px; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .bold { font-weight: bold; }
+    .warn-label { color: var(--warn); }
     .row-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin-bottom: 12px; }
     label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
     input, select {
@@ -133,7 +135,17 @@
         <span class="mono" id="camMeta" style="font-size:12px;color:var(--muted)">1280×720</span>
       </h2>
       <div class="fov-wrap">
-        <svg id="fovSvg" viewBox="0 0 1280 720" preserveAspectRatio="xMidYMid meet"></svg>
+        <svg id="fovSvg" preserveAspectRatio="xMidYMid meet">
+          <path id="fovGrid" stroke="#1f2937" stroke-dasharray="6 6" />
+          <g id="fovDetections"></g>
+          <text id="fovEmpty" display="none" text-anchor="middle" fill="#64748b" font-size="22">当前画面未检出匹配标签</text>
+        </svg>
+        <template id="fovMarker"><svg><g>
+          <polygon fill="rgba(34,197,94,0.14)" stroke="currentColor" stroke-width="3" />
+          <circle r="5" fill="currentColor" />
+          <rect height="24" rx="4" fill="rgba(15,20,28,0.85)" stroke="currentColor" />
+          <text fill="#f8fafc" font-size="16" font-family="monospace"></text>
+        </g></svg></template>
       </div>
       <h2 style="margin-top:16px">实时检出目标（3D 距离与相机坐标系位姿）</h2>
       <div style="overflow-x:auto">
@@ -213,67 +225,86 @@
         tbody.innerHTML = '<tr><td colspan="4" class="empty">暂无指定标签（all_detected 模式下按默认边长计算）</td></tr>';
         return;
       }
-      editTags.forEach((tag, idx) => {
+      editTags.forEach((tag) => {
         const tr = document.createElement('tr');
         tr.innerHTML = `
-          <td><input type="number" min="0" max="65535" step="1" value="${tag.id}" data-idx="${idx}" data-field="id" style="width:82px" /></td>
-          <td><input type="number" min="0.001" max="10" step="0.001" value="${tag.size_m}" data-idx="${idx}" data-field="size_m" style="width:104px" /></td>
-          <td><input type="text" maxlength="64" value="${(tag.label || '').replace(/"/g, '&quot;')}" data-idx="${idx}" data-field="label" style="width:100%" /></td>
-          <td><button class="btn danger" data-del="${idx}">删除</button></td>
+          <td><input type="number" min="0" max="65535" step="1" data-field="id" style="width:82px" /></td>
+          <td><input type="number" min="0.001" max="10" step="0.001" data-field="size_m" style="width:104px" /></td>
+          <td><input type="text" maxlength="64" data-field="label" style="width:100%" /></td>
+          <td><button class="btn danger" data-del>删除</button></td>
         `;
+        for (const input of tr.querySelectorAll('input')) {
+          input.value = tag[input.dataset.field] ?? '';
+        }
         tbody.appendChild(tr);
-      });
-      tbody.querySelectorAll('input').forEach((el) => {
-        el.addEventListener('change', (e) => {
-          const i = Number(e.target.dataset.idx);
-          const f = e.target.dataset.field;
-          editTags[i][f] = f === 'label' ? e.target.value : Number(e.target.value);
-        });
-      });
-      tbody.querySelectorAll('[data-del]').forEach((btn) => {
-        btn.addEventListener('click', (e) => {
-          editTags.splice(Number(e.target.dataset.del), 1);
-          renderTagRows();
-        });
       });
     }
 
+    $('tagRows').addEventListener('change', ({ target }) => {
+      const field = target.dataset.field;
+      if (field) {
+        editTags[target.closest('tr').sectionRowIndex][field] = field === 'label' ? target.value : Number(target.value);
+      }
+    });
+    $('tagRows').addEventListener('click', ({ target }) => {
+      const button = target.closest('[data-del]');
+      if (button) {
+        editTags.splice(button.closest('tr').sectionRowIndex, 1);
+        renderTagRows();
+      }
+    });
+
     function renderFov(width, height, detections) {
       const svg = $('fovSvg');
-      svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
-      let html = `
-        <line x1="${width / 2}" y1="0" x2="${width / 2}" y2="${height}" stroke="#1f2937" stroke-dasharray="6 6" />
-        <line x1="0" y1="${height / 2}" x2="${width}" y2="${height / 2}" stroke="#1f2937" stroke-dasharray="6 6" />
-      `;
-      detections.forEach((d) => {
-        const color = d.configured ? '#22c55e' : '#f59e0b';
-        if (d.corners_px && d.corners_px.length === 4) {
-          const pts = d.corners_px.map((p) => `${p[0]},${p[1]}`).join(' ');
-          html += `<polygon points="${pts}" fill="rgba(34,197,94,0.14)" stroke="${color}" stroke-width="3" />`;
-        }
+      const viewBox = `0 0 ${width} ${height}`;
+      const empty = $('fovEmpty');
+      if (svg.getAttribute('viewBox') !== viewBox) {
+        svg.setAttribute('viewBox', viewBox);
+        $('fovGrid').setAttribute('d', `M${width / 2} 0V${height} M0 ${height / 2}H${width}`);
+        empty.setAttribute('x', width / 2);
+        empty.setAttribute('y', height / 2 - 12);
+      }
+      empty.style.display = detections.length ? 'none' : 'inline';
+      const markers = $('fovDetections');
+      while (markers.childElementCount > detections.length) markers.lastElementChild.remove();
+      detections.forEach((d, index) => {
+        const marker = markers.children[index] || markers.appendChild(
+          $('fovMarker').content.querySelector('g').cloneNode(true));
+        const [polygon, circle, rect, text] = marker.children;
+        marker.style.color = d.configured ? '#22c55e' : '#f59e0b';
+        polygon.setAttribute('points', d.corners_px?.length === 4
+          ? d.corners_px.map((p) => p.join(',')).join(' ') : '');
         const cx = d.center_px ? d.center_px[0] : width / 2;
         const cy = d.center_px ? d.center_px[1] : height / 2;
         const title = `ID ${d.id}${d.label ? ' (' + d.label + ')' : ''} · ${d.distance_m.toFixed(3)} m`;
-        html += `<circle cx="${cx}" cy="${cy}" r="5" fill="${color}" />`;
-        html += `<rect x="${cx - 10}" y="${Math.max(8, cy - 34)}" width="${Math.max(150, title.length * 9)}" height="24" rx="4" fill="rgba(15,20,28,0.85)" stroke="${color}" stroke-width="1" />`;
-        html += `<text x="${cx - 2}" y="${Math.max(24, cy - 18)}" fill="#f8fafc" font-size="16" font-family="monospace">${title}</text>`;
+        circle.setAttribute('cx', cx);
+        circle.setAttribute('cy', cy);
+        rect.setAttribute('x', cx - 10);
+        rect.setAttribute('y', Math.max(8, cy - 34));
+        rect.setAttribute('width', Math.max(150, title.length * 9));
+        text.setAttribute('x', cx - 2);
+        text.setAttribute('y', Math.max(24, cy - 18));
+        text.textContent = title;
       });
-      if (!detections.length) {
-        html += `<text x="${width / 2}" y="${height / 2 - 12}" text-anchor="middle" fill="#64748b" font-size="22">当前画面未检出匹配标签</text>`;
-      }
-      svg.innerHTML = html;
+    }
+
+    function chip(label, value, state = '') {
+      const el = document.createElement('span');
+      el.className = `chip ${state}`;
+      const strong = document.createElement('strong');
+      strong.textContent = value;
+      el.append(`${label}: `, strong);
+      return el;
     }
 
     function renderStatus(s) {
       const ir = s.isaac_ros || {};
       const alive = s.last_frame_age_ms !== null && s.last_frame_age_ms < 2000;
-      $('chips').innerHTML = `
-        <span class="chip ${alive ? 'ok' : 'warn'}">检测流: <strong>${alive ? s.fps + ' Hz' : '等待相机帧'}</strong></span>
-        <span class="chip">后端: <strong>${ir.backend || '-'}</strong></span>
-        <span class="chip">标志族: <strong>${ir.tag_family || '-'}</strong></span>
-        <span class="chip">Domain: <strong>${ir.ros_domain_id ?? '-'}</strong></span>
-        <span class="chip">发现范围: <strong>${ir.discovery_range || '-'}</strong></span>
-      `;
+      $('chips').replaceChildren(
+        chip('检测流', alive ? s.fps + ' Hz' : '等待相机帧', alive ? 'ok' : 'warn'),
+        chip('后端', ir.backend || '-'), chip('标志族', ir.tag_family || '-'),
+        chip('Domain', ir.ros_domain_id ?? '-'), chip('发现范围', ir.discovery_range || '-'),
+      );
       const cam = s.camera || { width: 1280, height: 720 };
       $('camMeta').textContent = `${cam.width}×${cam.height}` + (cam.fx ? ` · fx=${cam.fx} fy=${cam.fy}` : '');
       $('overrideBadge').style.display = s.override_active ? 'inline-flex' : 'none';
@@ -293,17 +324,22 @@
       if (!dets.length) {
         detBody.innerHTML = '<tr><td colspan="7" class="empty">当前视野内无检出标签</td></tr>';
       } else {
-        detBody.innerHTML = dets.map((d) => `
-          <tr>
-            <td class="mono"><strong>${d.id}</strong></td>
-            <td>${d.label || (d.configured ? '-' : '<span style="color:var(--warn)">默认尺寸</span>')}</td>
-            <td class="mono">${d.size_m.toFixed(3)} m</td>
-            <td class="mono"><strong>${d.distance_m.toFixed(3)} m</strong></td>
-            <td class="mono">${d.position_m.map((v) => v.toFixed(3)).join(', ')}</td>
-            <td class="mono">${d.rpy_deg.map((v) => v.toFixed(1)).join(', ')}</td>
-            <td class="mono">${d.edge_px.toFixed(1)} px</td>
-          </tr>
-        `).join('');
+        detBody.replaceChildren(...dets.map((d) => {
+          const tr = document.createElement('tr');
+          function cell(value, className) {
+            const td = tr.insertCell();
+            td.className = className;
+            td.textContent = value;
+          }
+          cell(d.id, 'mono bold');
+          cell(d.label || (d.configured ? '-' : '默认尺寸'), !d.label && !d.configured ? 'warn-label' : '');
+          cell(`${d.size_m.toFixed(3)} m`, 'mono');
+          cell(`${d.distance_m.toFixed(3)} m`, 'mono bold');
+          cell(d.position_m.map((v) => v.toFixed(3)).join(', '), 'mono');
+          cell(d.rpy_deg.map((v) => v.toFixed(1)).join(', '), 'mono');
+          cell(`${d.edge_px.toFixed(1)} px`, 'mono');
+          return tr;
+        }));
       }
 
       if (!formInitialized && s.rules) {
@@ -373,7 +409,7 @@
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         renderStatus(await res.json());
       } catch (err) {
-        $('chips').innerHTML = `<span class="chip warn">状态: <strong>未连接 (${err.message})</strong></span>`;
+        $('chips').replaceChildren(chip('状态', `未连接 (${err.message})`, 'warn'));
       }
     }
 

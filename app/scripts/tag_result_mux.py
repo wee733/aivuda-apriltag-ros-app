@@ -33,6 +33,8 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo
 from tf2_msgs.msg import TFMessage
 
+from tag_config import DEFAULT_TAGS, normalize_rules, write_config
+
 
 def _quat_to_rpy_deg(x, y, z, w):
     """Convert xyzw quaternion to intrinsic XYZ roll/pitch/yaw in degrees."""
@@ -47,26 +49,6 @@ def _quat_to_rpy_deg(x, y, z, w):
     return [round(math.degrees(roll), 2), round(math.degrees(pitch), 2), round(math.degrees(yaw), 2)]
 
 
-def _normalize_tags(tags):
-    if not isinstance(tags, list):
-        raise ValueError('tags must be a list')
-    seen = set()
-    cleaned = []
-    for entry in tags:
-        if not isinstance(entry, dict):
-            raise ValueError('each tag entry must be an object')
-        tid = int(entry['id'])
-        size_m = float(entry['size_m'])
-        label = str(entry.get('label', '') or '').strip()[:64]
-        if tid < 0 or tid > 65535 or tid in seen:
-            raise ValueError(f'duplicate or out-of-range tag id: {tid}')
-        if not math.isfinite(size_m) or not 0.0 < size_m <= 10.0:
-            raise ValueError(f'size_m for tag {tid} must be in (0, 10]')
-        seen.add(tid)
-        cleaned.append({'id': tid, 'size_m': size_m, 'label': label})
-    return cleaned
-
-
 class TagScaleRouter:
     """Filter configured tags and apply exact per-tag metric translation scaling.
 
@@ -77,41 +59,30 @@ class TagScaleRouter:
 
     def __init__(self, tags, base_size, family, *,
                  filter_mode='configured_only', default_size_m=None):
-        if not math.isfinite(base_size) or base_size <= 0.0:
+        if isinstance(base_size, bool) or not math.isfinite(base_size) or base_size <= 0.0:
             raise ValueError('base_size must be finite and positive')
         self.family = str(family)
         self.base_size = float(base_size)
         self._lock = threading.RLock()
         self.tags = []
         self.filter_mode = 'configured_only'
-        self.default_size_m = float(default_size_m if default_size_m is not None else base_size)
-        self._size_by_id = {}
-        self._label_by_id = {}
-        self._scale_by_id = {}
-        self._default_scale = 1.0
-        self.update_rules(tags, filter_mode=filter_mode, default_size_m=self.default_size_m)
+        self.default_size_m = self.base_size
+        self.update_rules(tags, filter_mode=filter_mode, default_size_m=default_size_m)
 
     def update_rules(self, tags, *, filter_mode=None, default_size_m=None):
-        cleaned = _normalize_tags(tags)
-        mode = self.filter_mode if filter_mode is None else str(filter_mode)
-        if mode not in ('configured_only', 'all_detected'):
-            raise ValueError('filter_mode must be configured_only or all_detected')
-        if mode == 'configured_only' and not cleaned:
-            raise ValueError('configured_only mode requires at least one tag entry')
-        default_size = self.default_size_m if default_size_m is None else float(default_size_m)
-        if not math.isfinite(default_size) or not 0.0 < default_size <= 10.0:
-            raise ValueError('default_size_m must be in (0, 10]')
-        size_by_id = {t['id']: t['size_m'] for t in cleaned}
-        label_by_id = {t['id']: t['label'] for t in cleaned}
-        scale_by_id = {tid: size / self.base_size for tid, size in size_by_id.items()}
+        rules = normalize_rules(tags, self.filter_mode if filter_mode is None else str(filter_mode),
+                                self.default_size_m if default_size_m is None else default_size_m)
+        cleaned = rules['tags']
+        default_size = rules['default_size_m']
+        by_id = {t['id']: (t['size_m'] / self.base_size, t['size_m'], t['label'], True)
+                 for t in cleaned}
         with self._lock:
             self.tags = cleaned
-            self.filter_mode = mode
+            self.filter_mode = rules['filter_mode']
             self.default_size_m = default_size
-            self._size_by_id = size_by_id
-            self._label_by_id = label_by_id
-            self._scale_by_id = scale_by_id
-            self._default_scale = default_size / self.base_size
+            self._rule_by_id = by_id
+            self._fallback = ((default_size / self.base_size, default_size, '', False)
+                              if self.filter_mode == 'all_detected' else None)
 
     def rules_snapshot(self):
         with self._lock:
@@ -123,12 +94,7 @@ class TagScaleRouter:
 
     def _resolve_id(self, tag_id):
         """Return (scale, size_m, label, configured) or None if filtered out."""
-        scale = self._scale_by_id.get(tag_id)
-        if scale is not None:
-            return scale, self._size_by_id[tag_id], self._label_by_id[tag_id], True
-        if self.filter_mode == 'all_detected':
-            return self._default_scale, self.default_size_m, '', False
-        return None
+        return self._rule_by_id.get(tag_id, self._fallback)
 
     def filter_detections(self, message, *, return_telemetry=False):
         """Return an AprilTagDetectionArray with tags rescaled to exact metric sizes."""
@@ -249,19 +215,21 @@ class _ApiServer:
                 except ValueError as exc:
                     self._send_json(400, {'error': f'invalid JSON: {exc}'})
                     return
-                if path == '/tags':
-                    try:
+                try:
+                    if path == '/tags':
                         applied = node.apply_runtime_override(data)
-                    except (KeyError, TypeError, ValueError) as exc:
-                        self._send_json(400, {'error': str(exc)})
+                    elif path == '/tags/reset':
+                        applied = node.reset_runtime_override()
+                    else:
+                        self._send_json(404, {'error': f'not found: {path}'})
                         return
-                    self._send_json(200, {'ok': True, **applied})
+                except (KeyError, TypeError, ValueError) as exc:
+                    self._send_json(400, {'error': str(exc)})
                     return
-                if path == '/tags/reset':
-                    applied = node.reset_runtime_override()
-                    self._send_json(200, {'ok': True, **applied})
+                except OSError as exc:
+                    self._send_json(500, {'error': f'Could not persist AprilTag rules: {exc}'})
                     return
-                self._send_json(404, {'error': f'not found: {path}'})
+                self._send_json(200, {'ok': True, **applied})
 
         self._server = ThreadingHTTPServer(('127.0.0.1', self.port), Handler)
         self._server.daemon_threads = True
@@ -283,7 +251,7 @@ class TagResultMux(Node):
     def __init__(self):
         super().__init__('tag_result_mux')
         config_file = str(self.declare_parameter('config_file', '/data/app_config.json').value)
-        base_size = float(self.declare_parameter('base_size', 0.289).value)
+        base_size = self.declare_parameter('base_size', 0.289).value
         img_w = int(self.declare_parameter('image_width', 1280).value)
         img_h = int(self.declare_parameter('image_height', 720).value)
 
@@ -291,25 +259,22 @@ class TagResultMux(Node):
         self._base_cfg = cfg
         self._data_dir = Path(os.environ.get('AIVUDA_DATA_DIR', '/data'))
         self._override_file = self._data_dir / 'tags_override.json'
-        self._override_active = False
-
-        initial_tags = cfg['tags']
-        initial_filter = cfg['filter_mode']
-        initial_default_size = cfg['default_size_m']
-        if self._override_file.is_file():
-            try:
-                ov = json.loads(self._override_file.read_text(encoding='utf-8'))
-                initial_tags = ov['tags']
-                initial_filter = ov.get('filter_mode', initial_filter)
-                initial_default_size = ov.get('default_size_m', initial_default_size)
-                self._override_active = True
-            except Exception as exc:
-                self.get_logger().warning(f'Ignoring invalid tags_override.json: {exc}')
-
-        self.router = TagScaleRouter(
-            initial_tags, base_size, cfg['tag_family'],
-            filter_mode=initial_filter, default_size_m=initial_default_size,
+        self._override_lock = threading.Lock()
+        self._base_router = TagScaleRouter(
+            cfg['tags'], base_size, cfg['tag_family'],
+            filter_mode=cfg['filter_mode'], default_size_m=cfg['default_size_m'],
         )
+        self.router = self._base_router
+        try:
+            ov = json.loads(self._override_file.read_text(encoding='utf-8'))
+            if not isinstance(ov, dict) or 'tags' not in ov:
+                raise ValueError('saved override must be an object containing tags')
+            self.router = self._router_with_override(ov)
+        except FileNotFoundError:
+            pass
+        except (KeyError, OSError, TypeError, ValueError, RecursionError) as exc:
+            self.get_logger().warning(f'Ignoring invalid tags_override.json: {exc}')
+
         self._state_lock = threading.Lock()
         self._frame_times = deque(maxlen=60)
         self._frames_total = 0
@@ -357,10 +322,7 @@ class TagResultMux(Node):
             'max_tags': 64,
             'tile_size': 32,
             'filter_mode': 'configured_only',
-            'tags': [
-                {'id': 0, 'size_m': 0.034, 'label': 'landing_small'},
-                {'id': 77, 'size_m': 0.289, 'label': 'landing_large'},
-            ],
+            'tags': [dict(tag) for tag in DEFAULT_TAGS],
             'ui_port': 19310,
         }
 
@@ -394,17 +356,24 @@ class TagResultMux(Node):
         if result.transforms:
             self.tf_output.publish(result)
 
+    def _router_with_override(self, data):
+        if not isinstance(data, dict):
+            raise ValueError('override must be an object')
+        current = self.router
+        mode = data.get('filter_mode', current.filter_mode)
+        size = data.get('default_size_m', current.default_size_m)
+        if mode is None or size is None:
+            raise ValueError('filter_mode and default_size_m cannot be null')
+        return TagScaleRouter(data.get('tags', current.tags), current.base_size,
+                              current.family, filter_mode=mode, default_size_m=size)
+
     def apply_runtime_override(self, data):
-        tags = data.get('tags', self.router.rules_snapshot()['tags'])
-        filter_mode = data.get('filter_mode', self.router.filter_mode)
-        default_size_m = data.get('default_size_m', self.router.default_size_m)
-        self.router.update_rules(tags, filter_mode=filter_mode, default_size_m=default_size_m)
-        snap = self.router.rules_snapshot()
-        self._data_dir.mkdir(parents=True, exist_ok=True)
-        tmp = self._override_file.with_suffix('.tmp')
-        tmp.write_text(json.dumps(snap, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
-        tmp.replace(self._override_file)
-        self._override_active = True
+        with self._override_lock:
+            candidate = self._router_with_override(data)
+            snap = candidate.rules_snapshot()
+            self._data_dir.mkdir(parents=True, exist_ok=True)
+            write_config(self._override_file, json.dumps(snap, indent=2, ensure_ascii=False))
+            self.router = candidate
         self.get_logger().info(
             f'Hot-updated AprilTag rules: mode={snap["filter_mode"]}, '
             f'default_size={snap["default_size_m"]} m, ids={[t["id"] for t in snap["tags"]]}'
@@ -412,17 +381,10 @@ class TagResultMux(Node):
         return {'rules': snap, 'override_active': True}
 
     def reset_runtime_override(self):
-        self.router.update_rules(
-            self._base_cfg['tags'],
-            filter_mode=self._base_cfg['filter_mode'],
-            default_size_m=self._base_cfg['default_size_m'],
-        )
-        try:
-            self._override_file.unlink()
-        except FileNotFoundError:
-            pass
-        self._override_active = False
-        snap = self.router.rules_snapshot()
+        with self._override_lock:
+            self._override_file.unlink(missing_ok=True)
+            self.router = self._base_router
+            snap = self.router.rules_snapshot()
         self.get_logger().info('Reset AprilTag rules to AivudaOS Config Center defaults')
         return {'rules': snap, 'override_active': False}
 
@@ -437,6 +399,7 @@ class TagResultMux(Node):
             frames_total = self._frames_total
             optical_frame = self._optical_frame
             last_stamp_s = self._last_stamp_s
+        router = self.router  # Writers swap the router only after persistence succeeds.
         return {
             'running': True,
             'fps': fps,
@@ -450,17 +413,17 @@ class TagResultMux(Node):
                 'tag_family': self._base_cfg['tag_family'],
                 'max_tags': self._base_cfg['max_tags'],
                 'tile_size': self._base_cfg['tile_size'],
-                'base_size_m': self.router.base_size,
+                'base_size_m': router.base_size,
                 'ros_domain_id': self._base_cfg.get('ros_domain_id', 0),
                 'discovery_range': os.environ.get('ROS_AUTOMATIC_DISCOVERY_RANGE', ''),
             },
-            'rules': self.router.rules_snapshot(),
+            'rules': router.rules_snapshot(),
             'config_defaults': {
                 'tags': self._base_cfg['tags'],
                 'filter_mode': self._base_cfg['filter_mode'],
                 'default_size_m': self._base_cfg['default_size_m'],
             },
-            'override_active': self._override_active,
+            'override_active': router is not self._base_router,
             'detections': detections,
         }
 

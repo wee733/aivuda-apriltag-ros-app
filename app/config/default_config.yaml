@@ -1,5 +1,5 @@
 apriltag:
-  ros_domain_id: 0
+  ros_domain_id: -1
   backend: CUDA
   tag_family: tag36h11
   default_size_m: 0.289
