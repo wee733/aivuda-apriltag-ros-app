@@ -1,0 +1,5 @@
+@apriltag_ros_api path /apriltag_ros/api /apriltag_ros/api/*
+handle @apriltag_ros_api {
+  uri strip_prefix /apriltag_ros/api
+  reverse_proxy 127.0.0.1:19310
+}

@@ -1,0 +1,9 @@
+# Measured black-border edge lengths; unrelated to the 0.088 m calibration grid.
+# Updated 2026-10-23: ID 0 = 3.4 cm, ID 77 = 28.9 cm.
+# Each entry runs an unmodified official AprilTagNode with this size.
+tag_family: tag36h11
+tags:
+  - id: 0
+    size: 0.034
+  - id: 77
+    size: 0.289

@@ -1,0 +1,15 @@
+apriltag:
+  ros_domain_id: 0
+  backend: CUDA
+  tag_family: tag36h11
+  default_size_m: 0.289
+  max_tags: 64
+  tile_size: 32
+  filter_mode: configured_only
+  tags:
+    - id: 0
+      size_m: 0.034
+      label: landing_small
+    - id: 77
+      size_m: 0.289
+      label: landing_large

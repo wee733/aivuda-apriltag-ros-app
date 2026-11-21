@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""Size rectification from the live calibrated stream, then launch official Isaac ROS AprilTag."""
+
+import json
+import math
+import os
+from pathlib import Path
+import sys
+
+import rclpy
+from rclpy.executors import ExternalShutdownException
+from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
+from sensor_msgs.msg import CameraInfo
+
+
+def calibrated_dimensions(info):
+    if info.width <= 0 or info.height <= 0 or not info.header.frame_id:
+        raise ValueError('CameraInfo has invalid dimensions or an empty optical frame')
+    expected = {'plumb_bob': 5, 'equidistant': 4, 'rational_polynomial': 8}
+    if expected.get(info.distortion_model) != len(info.d):
+        raise ValueError('CameraInfo has an unsupported or uncalibrated distortion model')
+    if not all(math.isfinite(x) for row in (info.k, info.d, info.r, info.p) for x in row):
+        raise ValueError('CameraInfo contains non-finite coefficients')
+    if min(info.k[0], info.k[4], info.p[0], info.p[5]) <= 0:
+        raise ValueError('CameraInfo has no valid focal lengths for metric pose')
+    return info.width, info.height
+
+
+def main(config_arg):
+    config_path = Path(config_arg)
+    if config_path.is_file():
+        cfg = json.loads(config_path.read_text(encoding='utf-8'))
+        backend = cfg.get('backend', 'CUDA')
+    else:
+        # Backward compatibility if invoked with bare backend string.
+        backend = config_arg
+        config_path = Path('/data/app_config.json')
+
+    rclpy.init(args=[])
+    node = Node('apriltag_camera_info_check')
+    info = []
+    width = height = None
+    try:
+        node.create_subscription(CameraInfo, '/camera/camera_info', info.append,
+                                 qos_profile_sensor_data)
+        node.get_logger().info('Waiting for calibrated /camera/camera_info')
+        while rclpy.ok() and not info:
+            rclpy.spin_once(node, timeout_sec=1.0)
+        if not info:
+            return
+        width, height = calibrated_dimensions(info[0])
+        node.get_logger().info(f'Rectifying {width}x{height} from {info[0].header.frame_id}')
+    except (KeyboardInterrupt, ExternalShutdownException):
+        return
+    except RuntimeError:
+        if rclpy.ok():
+            raise
+        return
+    finally:
+        node.destroy_node()
+        rclpy.try_shutdown()
+
+    launch_file = Path(__file__).with_name('detector.launch.py')
+    os.execvp('ros2', [
+        'ros2', 'launch', str(launch_file),
+        f'width:={width}',
+        f'height:={height}',
+        f'backend:={backend}',
+        f'config_file:={config_path}',
+    ])
+
+
+if __name__ == '__main__':
+    main(sys.argv[1] if len(sys.argv) > 1 else '/data/app_config.json')

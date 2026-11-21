@@ -1,0 +1,105 @@
+type: object
+additionalProperties: false
+required: [apriltag]
+properties:
+  apriltag:
+    type: object
+    additionalProperties: false
+    required:
+      - ros_domain_id
+      - backend
+      - tag_family
+      - default_size_m
+      - max_tags
+      - tile_size
+      - filter_mode
+      - tags
+    properties:
+      ros_domain_id:
+        description: 与 IMX219 相机和检测结果订阅者相同的 ROS 域。
+        type: integer
+        minimum: 0
+        maximum: 232
+        default: 0
+        need_restart: true
+      backend:
+        description: NVIDIA Isaac ROS 官方 AprilTagNode 后端（CUDA 仅支持 tag36h11；CPU/PVA 支持全部官方标志族）。
+        type: string
+        enum: [CUDA, CPU, PVA]
+        default: CUDA
+        need_restart: true
+      tag_family:
+        description: Isaac ROS 官方 AprilTagNode 参数 tag_family。CUDA 后端固定要求 tag36h11。
+        type: string
+        enum:
+          - tag36h11
+          - tag16h5
+          - tag25h9
+          - tag36h10
+          - circle21h7
+          - circle49h12
+          - custom48h12
+          - standard41h12
+          - standard52h13
+        default: tag36h11
+        need_restart: true
+      default_size_m:
+        description: 默认黑框物理边长（米）。用于 all_detected 模式下未单独配置尺寸的标签，并作为官方节点基础尺度参考。
+        type: number
+        exclusiveMinimum: 0
+        maximum: 10.0
+        default: 0.289
+        need_restart: true
+      max_tags:
+        description: Isaac ROS 官方 AprilTagNode 参数 max_tags，单帧最多检测标签数。
+        type: integer
+        minimum: 1
+        maximum: 256
+        default: 64
+        need_restart: true
+      tile_size:
+        description: Isaac ROS 官方 AprilTagNode 参数 tile_size，自适应二值化网格像素尺寸。
+        type: integer
+        minimum: 2
+        maximum: 64
+        default: 32
+        need_restart: true
+      filter_mode:
+        description: configured_only 仅发布下方 tags 列表中的标签；all_detected 发布同族所有检出标签（未列出的按 default_size_m 算距）。
+        type: string
+        enum: [configured_only, all_detected]
+        default: configured_only
+        need_restart: true
+      tags:
+        description: 可扩展标签尺寸表，每项指定标签 ID、真实黑框边长（米）和备注名称；也可在内置 Web UI 中实时热更新。
+        type: array
+        minItems: 0
+        maxItems: 128
+        default:
+          - id: 0
+            size_m: 0.034
+            label: landing_small
+          - id: 77
+            size_m: 0.289
+            label: landing_large
+        need_restart: true
+        items:
+          type: object
+          additionalProperties: false
+          required: [id, size_m]
+          properties:
+            id:
+              type: integer
+              minimum: 0
+              maximum: 65535
+              description: AprilTag 数字 ID。
+            size_m:
+              type: number
+              exclusiveMinimum: 0
+              maximum: 10.0
+              description: 该标签黑框真实物理边长（米），用于精确解算 3D 距离与位姿。
+            label:
+              type: string
+              maxLength: 64
+              default: ""
+              description: 可选标签名称备注（例如 landing_large / target_a）。
