@@ -6,7 +6,7 @@ The [launch graph](app/scripts/detector.launch.py) runs a single detector. The [
 
 ## Build the aivudaOS package
 
-App ID `apriltag_ros` · Version `isaacros5-imx219-1.1.1`
+App ID `apriltag_ros` · Version `isaacros5-imx219-1.1.2`
 
 From a Git checkout, run the following command with Bash, Git, GNU tar, gzip and Python 3 with PyYAML installed.
 

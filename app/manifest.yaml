@@ -1,7 +1,8 @@
 app_id: apriltag_ros
 name: AprilTag ROS Detector
 description: NVIDIA Isaac ROS GPU AprilTag detector with configurable tag families, arbitrary per-ID metric sizing, and built-in live Web UI.
-version: isaacros5-imx219-1.1.1
+version: isaacros5-imx219-1.1.2
+icon: icon.png
 pre_install: isaac_runtime/check.sh
 run:
   entrypoint: start.sh
