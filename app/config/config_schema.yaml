@@ -71,7 +71,7 @@ properties:
         default: configured_only
         need_restart: true
       tags:
-        description: 可扩展标签尺寸表，每项指定标签 ID、真实黑框边长（米）和备注名称；也可在内置 Web UI 中实时热更新。
+        description: 可扩展标签尺寸表，每项指定标签 ID、真实黑框边长（米）和备注名称。保存配置并重启后生效。
         type: array
         minItems: 0
         maxItems: 128

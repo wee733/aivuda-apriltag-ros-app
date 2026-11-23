@@ -167,3 +167,23 @@ def test_only_required_data_directory_group_is_added(monkeypatch, runner, owner_
     monkeypatch.setattr(runner.grp, 'getgrnam', lambda n: SimpleNamespace(gr_gid={'video': 44, 'render': 109}[n]))
     path = SimpleNamespace(stat=lambda: SimpleNamespace(st_uid=owner_uid, st_gid=data_gid, st_mode=mode))
     assert runner.supplementary_groups(path) == expected
+
+
+@pytest.mark.parametrize('config', [
+    {'tags': [], 'filter_mode': 'configured_only'},
+    {'tags': [{'id': 1, 'size_m': 0.2}, {'id': 1, 'size_m': 0.4}]},
+    {'filter_mode': 'unknown'},
+    {'backend': 'CPU', 'tag_family': 'unknown'},
+])
+def test_invalid_detector_rules_fail_before_docker(launch, config):
+    start, _ = launch
+    result = start(**config)
+    assert result.returncode != 0 and not result.stdout
+
+
+def test_all_detected_accepts_empty_tag_list(launch):
+    start, _ = launch
+    result = start(filter_mode='all_detected', tags=[])
+    assert result.returncode == 0, result.stderr
+    config = json.loads(json.loads(result.stdout)[-1])
+    assert config['tags'] == [] and config['filter_mode'] == 'all_detected'

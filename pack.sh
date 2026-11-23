@@ -2,7 +2,7 @@
 set -euo pipefail
 
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-"$root/app/isaac_runtime/check.sh" --plugin-only
+"$root/app/pre_install.sh" --plugin-only
 out_dir="${1:-$root/dist}"
 mkdir -p -- "$out_dir"
 name=$(python3 - "$root/app/manifest.yaml" <<'PYTHON'

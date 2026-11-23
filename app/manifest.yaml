@@ -1,13 +1,11 @@
 app_id: apriltag_ros
 name: AprilTag ROS Detector
-description: NVIDIA Isaac ROS GPU AprilTag detector with configurable tag families, arbitrary per-ID metric sizing, and built-in live Web UI.
-version: isaacros5-imx219-1.1.2
+description: Headless NVIDIA Isaac ROS AprilTag detector with calibrated rectification and per-ID metric poses and transforms.
+version: isaacros5-imx219-1.2.0
 icon: icon.png
-pre_install: isaac_runtime/check.sh
+pre_install: pre_install.sh
 run:
   entrypoint: start.sh
   args: []
-ui_index_path: ./ui/index.html
-caddyfile_config_path: ./config/apriltag_ros.caddy
 default_config_path: config/default_config.yaml
 config_schema_path: config/config_schema.yaml

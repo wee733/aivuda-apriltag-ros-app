@@ -1,4 +1,4 @@
-"""Validate AprilTag configuration on the host and in the live rule editor."""
+"""Validate AprilTag configuration before starting the detector."""
 import json
 import os
 from pathlib import Path
@@ -20,9 +20,9 @@ def bounded_integer(name, value, minimum, maximum):
     return int(value)
 
 
-def tag_size(field, value, numeric_only):
+def tag_size(field, value):
     message = f'{field} must be a number in (0, 10]'
-    if isinstance(value, bool) or (numeric_only and type(value) not in (int, float)):
+    if type(value) not in (int, float):
         raise ValueError(message)
     try:
         size = float(value)
@@ -33,14 +33,14 @@ def tag_size(field, value, numeric_only):
     return size
 
 
-def normalize_rules(tags, filter_mode, default_size_m, *, numeric_only=False):
+def normalize_rules(tags, filter_mode, default_size_m):
     if filter_mode not in ('configured_only', 'all_detected'):
         raise ValueError('filter_mode must be configured_only or all_detected')
     if not isinstance(tags, list):
         raise ValueError('tags must be a list')
     if filter_mode == 'configured_only' and not tags:
         raise ValueError('configured_only mode requires at least one tag entry')
-    default_size = tag_size('default_size_m', default_size_m, numeric_only)
+    default_size = tag_size('default_size_m', default_size_m)
     by_id = {}
     for index, entry in enumerate(tags):
         if not isinstance(entry, dict):
@@ -48,7 +48,7 @@ def normalize_rules(tags, filter_mode, default_size_m, *, numeric_only=False):
         tid = bounded_integer('tag id', entry.get('id'), 0, 65535)
         if tid in by_id:
             raise ValueError(f'Duplicate tag id: {tid}')
-        size = tag_size(f'tags[{index}].size_m', entry.get('size_m'), numeric_only)
+        size = tag_size(f'tags[{index}].size_m', entry.get('size_m'))
         label = str(entry.get('label', '') or '').strip()[:64]
         by_id[tid] = {'id': tid, 'size_m': size, 'label': label}
     return {'tags': list(by_id.values()), 'filter_mode': filter_mode, 'default_size_m': default_size}
@@ -115,6 +115,9 @@ def launch(cfg_path, runner, root):
         raise SystemExit(f'Unsupported AprilTag backend: {backend}')
 
     family = str(ap.get('tag_family', 'tag36h11'))
+    if family not in ('tag36h11', 'tag16h5', 'tag25h9', 'tag36h10', 'circle21h7',
+                      'circle49h12', 'custom48h12', 'standard41h12', 'standard52h13'):
+        raise SystemExit(f'Unsupported AprilTag family: {family}')
     if backend == 'CUDA' and family != 'tag36h11':
         raise SystemExit('Isaac ROS CUDA backend only supports tag_family=tag36h11 (switch backend to CPU/PVA for other families)')
 
@@ -124,7 +127,7 @@ def launch(cfg_path, runner, root):
     if not isinstance(tags, list) or len(tags) > 128:
         raise ValueError('apriltag.tags must be a list with at most 128 entries')
     rules = normalize_rules(tags, ap.get('filter_mode', 'configured_only'),
-                            ap.get('default_size_m', 0.289), numeric_only=True)
+                            ap.get('default_size_m', 0.289))
     max_tags = bounded_integer('apriltag.max_tags', ap.get('max_tags', 64), 1, 256)
     tile_size = bounded_integer('apriltag.tile_size', ap.get('tile_size', 32), 2, 64)
 
@@ -135,7 +138,6 @@ def launch(cfg_path, runner, root):
         'max_tags': max_tags,
         'tile_size': tile_size,
         **rules,
-        'ui_port': 19310,
     }
     # Carry this launch's private configuration into the container without touching
     # the live instance's /data/app_config.json, even if Docker rejects this run.

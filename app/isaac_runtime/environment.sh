@@ -2,8 +2,8 @@
 set -eo pipefail
 # The cached image sets DISPLAY=:1. Argus uses a headless EGL display when unset.
 unset DISPLAY
-/opt/aivuda-isaac/check.sh --plugin-only
+/app/pre_install.sh --plugin-only
 source /opt/ros/lyrical/setup.bash
 export AMENT_PREFIX_PATH="/opt/aivuda-isaac/prefix:${AMENT_PREFIX_PATH}"
 export LD_LIBRARY_PATH="/app/lib:/opt/aivuda-isaac/prefix/lib:${LD_LIBRARY_PATH}"
-exec /usr/bin/python3 /opt/aivuda-isaac/supervise.py "$@"
+exec /opt/aivuda-isaac/prefix/lib/tag_scale_filter/watch_detector "$@"

@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>tag_scale_filter</name>
+  <version>1.2.0</version>
+  <description>Metric AprilTag detections and transforms for calibrated multi-size tags.</description>
+  <maintainer email="dev@aivuda.com">Aivuda</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>rclcpp_components</depend>
+  <depend>isaac_ros_apriltag_interfaces</depend>
+  <depend>tf2_msgs</depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

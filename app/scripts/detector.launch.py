@@ -1,11 +1,10 @@
-"""Calibrated rectification and official NVIDIA Isaac ROS AprilTagNode with dynamic per-tag sizing."""
+"""Calibrated rectification and official NVIDIA Isaac ROS AprilTagNode with per-tag metric sizing."""
 
 import json
 from pathlib import Path
-import sys
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
@@ -21,29 +20,12 @@ def _load_runtime_config(config_file, scripts_dir, backend_fallback):
     path = Path(config_file)
     if path.is_file():
         return json.loads(path.read_text(encoding='utf-8'))
-    profile = yaml.safe_load((scripts_dir.parent / 'config/business_tags.yaml').read_text())
-    tags = [{'id': int(t['id']), 'size_m': float(t['size']), 'label': ''} for t in profile['tags']]
-    return {
-        'backend': backend_fallback,
-        'tag_family': profile['tag_family'],
-        'default_size_m': max(t['size_m'] for t in tags),
-        'max_tags': 64,
-        'tile_size': 32,
-        'filter_mode': 'configured_only',
-        'tags': tags,
-        'ui_port': 19310,
-    }
+    cfg = yaml.safe_load((scripts_dir.parent / 'config/default_config.yaml').read_text())['apriltag']
+    return dict(cfg, backend=backend_fallback)
 
 
-def detection_graph(context):
-    width = int(LaunchConfiguration('width').perform(context))
-    height = int(LaunchConfiguration('height').perform(context))
-    backend_arg = LaunchConfiguration('backend').perform(context)
-    config_file = LaunchConfiguration('config_file').perform(context)
-    scripts = Path(__file__).resolve().parent
-
-    cfg = _load_runtime_config(config_file, scripts, backend_arg)
-    backend = str(cfg.get('backend', backend_arg))
+def components(width, height, cfg):
+    backend = cfg['backend']
     family = str(cfg.get('tag_family', 'tag36h11'))
     max_tags = int(cfg.get('max_tags', 64))
     tile_size = int(cfg.get('tile_size', 32))
@@ -56,7 +38,15 @@ def detection_graph(context):
     base_size = float(max(candidate_sizes))
 
     intra_process = [{'use_intra_process_comms': True}]
-    nodes = [
+    filter_params = {
+        'base_size': base_size, 'tag_family': family, 'default_size_m': default_size_m,
+        'filter_mode': cfg['filter_mode'],
+    }
+    # Empty arrays have no element type in launch_ros. The C++ defaults are typed.
+    if tags:
+        filter_params.update(tag_ids=[t['id'] for t in tags],
+                             tag_sizes=[float(t['size_m']) for t in tags])
+    return [
         ComposableNode(
             package='isaac_ros_image_proc', plugin='nvidia::isaac_ros::image_proc::RectifyNode',
             name='rectify', namespace='camera', extra_arguments=intra_process,
@@ -77,25 +67,27 @@ def detection_graph(context):
                         ('tag_detections', '/apriltag/internal/detections'),
                         ('/tf', '/apriltag/internal/tf')],
         ),
+        ComposableNode(
+            package='tag_scale_filter', plugin='aivuda::TagScaleFilterNode',
+            name='tag_scale_filter', extra_arguments=intra_process, parameters=[filter_params],
+        ),
     ]
+
+
+def detection_graph(context):
+    width = int(LaunchConfiguration('width').perform(context))
+    height = int(LaunchConfiguration('height').perform(context))
+    backend = LaunchConfiguration('backend').perform(context)
+    config_file = LaunchConfiguration('config_file').perform(context)
+    cfg = _load_runtime_config(config_file, Path(__file__).resolve().parent, backend)
     container = ComposableNodeContainer(
         name='imx219_apriltag_container', namespace='', package='rclcpp_components',
         executable='component_container', arguments=['--executor-type', 'multi-threaded'],
         ros_arguments=['--log-level', 'serialize_buffer_with_endpoint:=warn',
                        '--log-level', 'deserialize_buffer_with_endpoint:=warn'],
-        composable_node_descriptions=nodes, output='screen', on_exit=stop_if_child_exits,
+        composable_node_descriptions=components(width, height, cfg), output='screen', on_exit=stop_if_child_exits,
     )
-    mux = ExecuteProcess(
-        cmd=[
-            sys.executable, str(scripts / 'tag_result_mux.py'), '--ros-args',
-            '-p', f'config_file:={config_file}',
-            '-p', f'base_size:={base_size}',
-            '-p', f'image_width:={width}',
-            '-p', f'image_height:={height}',
-        ],
-        output='screen', on_exit=stop_if_child_exits,
-    )
-    return [container, mux]
+    return [container]
 
 
 def generate_launch_description():
@@ -106,3 +98,47 @@ def generate_launch_description():
         DeclareLaunchArgument('config_file', default_value='/data/app_config.json'),
         OpaqueFunction(function=detection_graph),
     ])
+
+
+def load_components(width, height, config_file, backend, manager_pid):
+    """Apply the same launch descriptions, then exit once the native container owns them."""
+    import os
+    import signal
+
+    from composition_interfaces.srv import LoadNode
+    from launch import LaunchContext
+    from launch_ros.actions.load_composable_nodes import get_composable_node_load_request
+    import rclpy
+
+    try:
+        rclpy.init(args=[])
+        with rclpy.create_node('apriltag_component_loader') as node:
+            client = node.create_client(
+                LoadNode, '/imx219_apriltag_container/_container/load_node')
+            if not client.wait_for_service(timeout_sec=30):
+                raise RuntimeError('AprilTag component container is unavailable')
+            graph = components(width, height,
+                               _load_runtime_config(config_file, Path(__file__).parent, backend))
+            for description in graph:
+                request = get_composable_node_load_request(description, LaunchContext())
+                future = client.call_async(request)
+                rclpy.spin_until_future_complete(node, future, timeout_sec=120)
+                if not future.done():
+                    raise RuntimeError(f'Timed out loading {request.plugin_name}')
+                result = future.result()
+                if not result.success:
+                    raise RuntimeError(f'Failed to load {request.plugin_name}: {result.error_message}')
+                node.get_logger().info(f'Loaded {result.full_node_name}')
+    except Exception:
+        # A failed component graph must also fail the foreground container process.
+        if os.getpgrp() == manager_pid:
+            signal.signal(signal.SIGUSR1, signal.SIG_IGN)
+            os.killpg(manager_pid, signal.SIGUSR1)
+        raise
+    finally:
+        rclpy.try_shutdown()
+
+
+if __name__ == '__main__':
+    import sys
+    load_components(int(sys.argv[1]), int(sys.argv[2]), sys.argv[3], sys.argv[4], int(sys.argv[5]))

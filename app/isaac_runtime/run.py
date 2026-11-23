@@ -8,7 +8,6 @@ from pathlib import Path
 import subprocess
 import sys
 
-from supervise import process_start_ticks
 
 
 IMAGE = 'airborne/isaac-ros:5.0-imx219-preview-20261022'
@@ -17,6 +16,12 @@ DEVICE_PATTERNS = ('nvhost-gpu', 'nvhost-as-gpu', 'nvhost-ctrl-gpu', 'nvhost-pow
                    'nvhost-tsg-gpu', 'nvgpu/igpu0/as', 'nvgpu/igpu0/channel',
                    'nvgpu/igpu0/ctrl', 'nvgpu/igpu0/power', 'nvgpu/igpu0/tsg',
                    'nvmap', 'nvsciipc', 'dri/renderD*', 'dri/card*')
+
+
+def process_start_ticks(pid):
+    # comm can contain spaces, ')' and non-UTF8 bytes. starttime is field 22.
+    stat = Path(f'/proc/{pid}/stat').read_bytes()
+    return stat.rsplit(b')', 1)[1].split()[19].decode('ascii')
 
 
 def resolve_discovery_env():

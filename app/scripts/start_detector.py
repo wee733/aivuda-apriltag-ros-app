@@ -6,6 +6,7 @@ import math
 import os
 from pathlib import Path
 import sys
+import subprocess
 
 from tag_config import write_config
 
@@ -55,13 +56,19 @@ def start_ros(config_path, backend):
         rclpy.try_shutdown()
 
     launch_file = Path(__file__).with_name('detector.launch.py')
-    os.execvp('ros2', [
-        'ros2', 'launch', str(launch_file),
-        f'width:={width}',
-        f'height:={height}',
-        f'backend:={backend}',
-        f'config_file:={config_path}',
-    ])
+    # The short-lived loader uses the same descriptions as ros2 launch. exec leaves
+    # the stock C++ container as the foreground workload after startup.
+    from ament_index_python.packages import get_package_prefix
+    executable = Path(get_package_prefix('rclcpp_components')) / 'lib/rclcpp_components/component_container'
+    # Docker's init reaps the short-lived loader. It shares the detector group
+    # so the owner watcher also terminates it if stopped during component loading.
+    subprocess.run(['sh', '-c', '"$@" &', 'load-apriltag', sys.executable,
+                    str(launch_file), str(width), str(height), str(config_path),
+                    backend, str(os.getpid())], check=True)
+    os.execv(str(executable), [str(executable), '--executor-type', 'multi-threaded',
+                               '--ros-args', '-r', '__node:=imx219_apriltag_container',
+                               '--log-level', 'serialize_buffer_with_endpoint:=warn',
+                               '--log-level', 'deserialize_buffer_with_endpoint:=warn'])
 
 
 def main(config_arg, payload=None):

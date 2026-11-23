@@ -1,6 +1,6 @@
 # AprilTag ROS Detector
 
-Detects landing tags 0 and 77 and publishes their poses.
+Publishes metric detections and transforms for configured AprilTags.
 
 机载着陆标志检测 app。安装使用设备缓存的 Isaac ROS 5.0 / ROS 2 Lyrical 镜像
 `airborne/isaac-ros:5.0-imx219-preview-20261022` 和随包提供的 Jetson Orin
@@ -21,6 +21,12 @@ CUDA buffer 插件。安装时检查 Docker、GPU 和镜像，运行时只读挂
   可在配置中心选择 `CPU` 复测原有 VPI 路径，修改后重启。
 
 检测图来自 airborne 提交 `c896f25` 中的 `apriltag.launch.py` 和当前
-`control/config/camera_profiles.yaml`。原始几何结果合并代码和标签尺寸表随包保留。
+`control/config/camera_profiles.yaml`。标签尺寸随 AivudaOS 配置提供。
 主机要查看结果时需加载与容器匹配的 Jazzy AprilTag 消息接口。在有标志的视场内，
 核对实际检测 ID、角点、时间戳和话题频率；空数组只证明该帧完成了检测。
+
+## 配置和运行
+
+在 AivudaOS 配置中心设置 `backend`、`tag_family`、`default_size_m`、`max_tags`、`tile_size`、`ros_domain_id`、`filter_mode` 和 `tags`，保存后重启。旧版 Web 面板保存的自定义规则需录入配置中心。`configured_only` 至少需要一条规则，`all_detected` 可留空，未配置的标签以 `default_size_m` 求解。
+
+`RectifyNode`、`AprilTagNode` 和 `TagScaleFilterNode` 在同一个多线程 C++ 组件容器中运行。已验证的标定参数通过一次性启动进程传给组件。下游可订阅 `/camera/camera_info_rect`、`/tag_detections` 和 `/tf`。
